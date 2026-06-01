@@ -1,0 +1,354 @@
+- name: Full monitoring stack deployment
+  hosts: HQ-SRV
+  become: true
+  vars:
+    monitoring_dir: /opt/monitoring
+
+  tasks:
+    # ============================================================
+    # ПРЕДВАРИТЕЛЬНАЯ НАСТРОЙКА
+    # ============================================================
+    - name: Install required packages
+      community.general.apt_rpm:
+        name:
+          - docker-engine
+          - docker-compose-v2
+          - python3
+          - curl
+        state: present
+        update_cache: true
+
+    - name: Start and enable Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Create monitoring directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ monitoring_dir }}"
+        - "{{ monitoring_dir }}/prometheus_data"
+        - "{{ monitoring_dir }}/grafana_data"
+        - "{{ monitoring_dir }}/alertmanager_data"
+
+    # ============================================================
+    # КОНФИГУРАЦИОННЫЕ ФАЙЛЫ
+    # ============================================================
+    - name: Deploy docker-compose.yml
+      ansible.builtin.copy:
+        dest: "{{ monitoring_dir }}/docker-compose.yml"
+        content: |
+          version: '3'
+          services:
+            prometheus:
+              image: prom/prometheus:latest
+              container_name: prometheus
+              restart: unless-stopped
+              ports:
+                - "9090:9090"
+              volumes:
+                - {{ monitoring_dir }}/prometheus.yml:/etc/prometheus/prometheus.yml
+                - {{ monitoring_dir }}/alert_rules.yml:/etc/prometheus/alert_rules.yml
+                - {{ monitoring_dir }}/prometheus_data:/prometheus
+              command:
+                - '--config.file=/etc/prometheus/prometheus.yml'
+                - '--storage.tsdb.path=/prometheus'
+
+            alertmanager:
+              image: prom/alertmanager:latest
+              container_name: alertmanager
+              restart: unless-stopped
+              ports:
+                - "9093:9093"
+              volumes:
+                - {{ monitoring_dir }}/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+                - {{ monitoring_dir }}/alertmanager_data:/alertmanager
+
+            grafana:
+              image: grafana/grafana:latest
+              container_name: grafana
+              restart: unless-stopped
+              ports:
+                - "3000:3000"
+              volumes:
+                - {{ monitoring_dir }}/grafana_data:/var/lib/grafana
+              environment:
+                - GF_SECURITY_ADMIN_PASSWORD=admin
+                - GF_AUTH_ANONYMOUS_ENABLED=true
+                - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+
+    - name: Deploy prometheus.yml
+      ansible.builtin.copy:
+        dest: "{{ monitoring_dir }}/prometheus.yml"
+        content: |
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+
+          alerting:
+            alertmanagers:
+              - static_configs:
+                  - targets: ['localhost:9093']
+
+          rule_files:
+            - "/etc/prometheus/alert_rules.yml"
+
+          scrape_configs:
+            - job_name: 'node_exporter'
+              static_configs:
+                - targets:
+                    - '192.168.100.2:9100'
+                    - '192.168.0.2:9100'
+
+            - job_name: 'prometheus'
+              static_configs:
+                - targets:
+                    - 'localhost:9090'
+
+    - name: Deploy alert_rules.yml
+      ansible.builtin.copy:
+        dest: "{{ monitoring_dir }}/alert_rules.yml"
+        content: |
+          {% raw %}
+          groups:
+            - name: critical_alerts
+              rules:
+                - alert: InstanceDown
+                  expr: up == 0
+                  for: 2m
+                  labels:
+                    severity: critical
+                  annotations:
+                    summary: "Сервер {{ $labels.instance }} недоступен"
+                    description: "Сервер {{ $labels.instance }} не отвечает более 2 минут."
+
+                - alert: DiskSpaceCritical
+                  expr: (node_filesystem_avail_bytes{fstype!="tmpfs",mountpoint="/"} / node_filesystem_size_bytes) * 100 < 10
+                  for: 1m
+                  labels:
+                    severity: critical
+                  annotations:
+                    summary: "Диск заполнен на {{ $labels.instance }}"
+                    description: "Свободно менее 10% на {{ $labels.mountpoint }}. Текущее: {{ $value | humanizePercentage }}"
+
+                - alert: WebServerDown
+                  expr: absent(up{job="node_exporter",group="web"})
+                  for: 1m
+                  labels:
+                    severity: critical
+                  annotations:
+                    summary: "Один из веб-серверов недоступен"
+                    description: "WEB1 (192.168.2.3) или WEB2 (192.168.2.4) не отвечают."
+
+            - name: warning_alerts
+              rules:
+                - alert: HighCPUUsage
+                  expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "Высокая загрузка CPU на {{ $labels.instance }}"
+                    description: "CPU: {{ $value | humanize }}% более 5 минут."
+
+                - alert: LowMemory
+                  expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 20
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "Мало памяти на {{ $labels.instance }}"
+                    description: "Доступно {{ $value | humanize }}% RAM."
+
+            - name: info_alerts
+              rules:
+                - alert: ServerRebooted
+                  expr: time() - node_boot_time_seconds < 300
+                  for: 0m
+                  labels:
+                    severity: info
+                  annotations:
+                    summary: "Сервер {{ $labels.instance }} перезагружен"
+                    description: "Uptime менее 5 минут."
+          {% endraw %}
+
+    - name: Deploy alertmanager.yml
+      ansible.builtin.copy:
+        dest: "{{ monitoring_dir }}/alertmanager.yml"
+        content: |
+          global:
+            resolve_timeout: 5m
+
+          route:
+            receiver: 'log-alerts'
+            group_by: ['alertname', 'severity']
+            group_wait: 10s
+            group_interval: 30s
+            repeat_interval: 4h
+
+            routes:
+              - match:
+                  severity: critical
+                receiver: 'log-alerts'
+                group_wait: 5s
+                repeat_interval: 15m
+
+              - match:
+                  severity: warning
+                receiver: 'log-alerts'
+                repeat_interval: 1h
+
+              - match:
+                  severity: info
+                receiver: 'log-alerts'
+                repeat_interval: 24h
+
+          receivers:
+            - name: 'log-alerts'
+              webhook_configs:
+                - url: 'http://localhost:3001/alerts'
+                  send_resolved: true
+
+    # ============================================================
+    # ЗАПУСК СЕРВИСОВ
+    # ============================================================
+    - name: Fix Prometheus data permissions (uid 65534)
+      ansible.builtin.file:
+        path: "{{ monitoring_dir }}/prometheus_data"
+        owner: 65534
+        group: 65534
+        mode: '0755'
+
+    - name: Fix Grafana data permissions (uid 472)
+      ansible.builtin.file:
+        path: "{{ monitoring_dir }}/grafana_data"
+        owner: 472
+        group: 0
+        mode: '0755'
+
+    - name: Pull Docker images
+      ansible.builtin.command:
+        cmd: docker compose pull
+        chdir: "{{ monitoring_dir }}"
+      changed_when: false
+
+    - name: Start monitoring stack
+      ansible.builtin.command:
+        cmd: docker compose up -d --force-recreate
+        chdir: "{{ monitoring_dir }}"
+      register: compose_output
+      changed_when: true
+
+    - name: Wait for Prometheus
+      ansible.builtin.wait_for:
+        port: 9090
+        timeout: 60
+
+    - name: Wait for Alertmanager
+      ansible.builtin.wait_for:
+        port: 9093
+        timeout: 30
+
+    - name: Wait for Grafana
+      ansible.builtin.wait_for:
+        port: 3000
+        timeout: 30
+
+    # ============================================================
+    # НАСТРОЙКА GRAFANA
+    # ============================================================
+    - name: Wait for Grafana API
+      ansible.builtin.uri:
+        url: http://localhost:3000/api/health
+        status_code: 200
+      register: grafana_health
+      until: grafana_health.status == 200
+      retries: 10
+      delay: 3
+
+    - name: Check if Prometheus datasource exists
+      ansible.builtin.uri:
+        url: http://localhost:3000/api/datasources/name/Prometheus
+        user: admin
+        password: admin
+        force_basic_auth: true
+      register: ds_check
+      ignore_errors: true
+
+    - name: Add Prometheus datasource to Grafana
+      ansible.builtin.uri:
+        url: http://localhost:3000/api/datasources
+        method: POST
+        user: admin
+        password: admin
+        force_basic_auth: true
+        body:
+          name: Prometheus
+          type: prometheus
+          url: http://prometheus:9090
+          access: proxy
+          isDefault: true
+        body_format: json
+        headers:
+          Content-Type: application/json
+      when: ds_check.status != 200
+
+    - name: Install jq for JSON processing
+      community.general.apt_rpm:
+        name: jq
+        state: present
+
+    - name: Import Node Exporter Full dashboard (ID 1860)
+      ansible.builtin.shell: |
+        DASHBOARD_ID=1860
+        curl -s "https://grafana.com/api/dashboards/${DASHBOARD_ID}/revisions/latest/download" -o /tmp/dash.json
+        if [ -s /tmp/dash.json ]; then
+          jq '{"dashboard": ., "overwrite": true}' /tmp/dash.json | \
+          curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -u admin:admin \
+            -d @- \
+            "http://localhost:3000/api/dashboards/db"
+        else
+          echo "WARNING: Could not download dashboard, skipping"
+        fi
+      args:
+        executable: /bin/bash
+      ignore_errors: true
+      changed_when: false
+
+    # ============================================================
+    # ПРОВЕРКА
+    # ============================================================
+    - name: Wait for Prometheus API
+      ansible.builtin.uri:
+        url: http://localhost:9090/-/ready
+        status_code: 200
+      register: prom_ready
+      until: prom_ready.status == 200
+      retries: 15
+      delay: 4
+
+    - name: Check Prometheus targets
+      ansible.builtin.uri:
+        url: http://localhost:9090/api/v1/targets
+        return_content: true
+      register: targets_output
+
+    - name: Show Prometheus targets
+      ansible.builtin.debug:
+        var: targets_output.json
+
+    - name: Final status message
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "╔══════════════════════════════════════════════════════════════╗"
+          - "║       МОНИТОРИНГ-СТЕК РАЗВЁРНУТ                              ║"
+          - "╠══════════════════════════════════════════════════════════════╣"
+          - "║  Логин/пароль:  admin / admin                                ║"
+          - ""
