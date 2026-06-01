@@ -21,7 +21,7 @@ crypto-ipsec ike enable
 
 ```bash
 crypto-ipsec profile CIPROFILE ike-v2
-mode
+mode tunnel
 ```
 
 ### 🔑 IKE фаза 1
