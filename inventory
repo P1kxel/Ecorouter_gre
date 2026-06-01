@@ -1,0 +1,6 @@
+[web]
+HQ-SRV ansible_host=172.16.1.2 ansible_port=2026 ansible_user=sshuser ansible_password=P@ssw0rd
+BR-SRV ansible_host=192.168.0.2 ansible_port=2026 ansible_user=sshuser ansible_password=P@ssw0rd
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
