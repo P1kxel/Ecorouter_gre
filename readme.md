@@ -13,7 +13,7 @@ configure terminal
 interface tunnel.0
 description "GRE"
 ip address 10.10.10.1/30
-ip tunnel 172.16.1.2 172.16.2.2 mode gre
+ip tunnel <source_ip> <dest_ip> mode gre
 
 
 exit
@@ -30,8 +30,8 @@ configure terminal
 
 interface tunnel.0
 description "GRE"
-ip address 10.10.10.2/30
-ip tunnel 172.16.2.2 172.16.1.2 mode gre
+ip address 10.0.0.2/30
+ip tunnel <source_ip> <best_ip> mode gre
 
 
 exit
