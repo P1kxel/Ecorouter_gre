@@ -31,7 +31,7 @@ configure terminal
 interface tunnel.0
 description "GRE"
 ip address 10.0.0.2/30
-ip tunnel <source_ip> <best_ip> mode gre
+ip tunnel <source_ip> <dest_ip> mode gre
 
 
 exit
