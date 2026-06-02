@@ -84,8 +84,8 @@ exit
 ike-phase2 
 protocol esp 
 proposal aes256-sha256 
-local-ts 172.16.1.2
-remote-ts 172.16.2.2
+local-ts <source_ip>
+remote-ts <dest_ip>
 exit
 exit
 ```
@@ -98,7 +98,7 @@ exit
 
 ```bash
 crypto-map CMAP 10
-match peer 172.16.2.2
+match peer <test_ip>
 set crypto-ipsec profile CIPROFILE 
 exit
 ```
@@ -117,12 +117,12 @@ exit
 
 ```bash
 filter-map ipv4 FMAP 5
-match gre host 172.16.1.2 host 172.16.2.2
-set crypto-map CMAP peer 172.16.2.2
+match gre host <source_ip> host <dest_ip>
+set crypto-map CMAP peer <dest_ip>
 exit
 filter-map ipv4 FMAP 10
-match udp host 172.16.2.2 eq 4500 host 172.16.1.2 eq 4500
-set crypto-map CMAP peer 172.16.2.2
+match udp host <dest_ip>eq 4500 host <source_ip> eq 4500
+set crypto-map CMAP peer <dest_ip>
 exit
 filter-map ipv4 FMAP 15
 match any any any
