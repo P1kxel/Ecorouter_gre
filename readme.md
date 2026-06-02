@@ -13,7 +13,7 @@ configure terminal
 interface tunnel.0
 description "GRE"
 ip address 10.10.10.1/30
-ip tunnel <source_ip> <dest_ip> mode gre
+ip tunnel 172.16.1.2 172.16.2.2 mode gre
 
 
 exit
@@ -30,8 +30,8 @@ configure terminal
 
 interface tunnel.0
 description "GRE"
-ip address 10.0.0.2/30
-ip tunnel <source_ip> <dest_ip> mode gre
+ip address 10.10.10.2/30
+ip tunnel 172.16.2.2 172.16.1.2 mode gre
 
 
 exit
@@ -84,8 +84,8 @@ exit
 ike-phase2 
 protocol esp 
 proposal aes256-sha256 
-local-ts <source_ip>
-remote-ts <dest_ip>
+local-ts 172.16.1.2
+remote-ts 172.16.2.2
 exit
 exit
 ```
@@ -98,7 +98,7 @@ exit
 
 ```bash
 crypto-map CMAP 10
-match peer <test_ip>
+match peer 172.16.2.2
 set crypto-ipsec profile CIPROFILE 
 exit
 ```
@@ -117,12 +117,12 @@ exit
 
 ```bash
 filter-map ipv4 FMAP 5
-match gre host <source_ip> host <dest_ip>
-set crypto-map CMAP peer <dest_ip>
+match gre host 172.16.1.2 host 172.16.2.2
+set crypto-map CMAP peer 172.16.2.2
 exit
 filter-map ipv4 FMAP 10
-match udp host <dest_ip>eq 4500 host <source_ip> eq 4500
-set crypto-map CMAP peer <dest_ip>
+match udp host 172.16.2.2 eq 4500 host 172.16.1.2 eq 4500
+set crypto-map CMAP peer 172.16.2.2
 exit
 filter-map ipv4 FMAP 15
 match any any any
@@ -133,7 +133,7 @@ exit
 Применяем на интерфейсах:
 
 ```bash
-interface inet_interface
+interface isp
 set filter-map in FMAP 10
 exit
 interface tunnel.0
@@ -144,4 +144,48 @@ write memory
 
 ---
 
-## На втором устройстве мы зеркально выполняем те же самые действия
+## 🔄 На втором устройстве мы зеркально выполняем те же самые действия
+
+```bash
+crypto-ipsec ike enable
+crypto-ipsec profile CIPROFILE ike-v2
+mode tunnel
+ike-phase1
+proposal aes256-sha256-modp2048
+auth pre-shared-key P@ssw0rd
+exit
+ike-phase2 
+protocol esp 
+proposal aes256-sha256 
+local-ts 172.16.2.2
+remote-ts 172.16.1.2
+exit
+exit
+crypto-map CMAP 10
+match peer 172.16.1.2
+set crypto-ipsec profile CIPROFILE 
+exit
+filter-map ipv4 FMAP 5
+match gre host 172.16.2.2 host 172.16.1.2
+set crypto-map CMAP peer 172.16.1.2
+exit
+filter-map ipv4 FMAP 10
+match udp host 172.16.1.2 eq 4500 host 172.16.2.2 eq 4500
+set crypto-map CMAP peer 172.16.1.2
+exit
+filter-map ipv4 FMAP 15
+match any any any
+set accept
+exit
+interface isp
+set filter-map in FMAP 10
+exit
+interface tunnel.0
+set filter-map in FMAP 10
+exit
+write memory
+```
+
+---
+
+> ✅ Конфигурация завершена. Оба узла настроены на установление защищённого IPsec-туннеля с использованием IKEv2. Убедитесь, что маршруты до удалённых подсетей заданы корректно.
