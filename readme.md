@@ -133,7 +133,7 @@ exit
 Применяем на интерфейсах:
 
 ```bash
-interface isp
+interface inet_interface
 set filter-map in FMAP 10
 exit
 interface tunnel.0
